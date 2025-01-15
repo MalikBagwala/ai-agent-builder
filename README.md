@@ -32,3 +32,11 @@ Agent builder
 5. **Access the Server**  
    The development server will be available at:  
    [http://localhost:4000](http://localhost:4000)
+
+### Feature Parity
+
+Feature 1: Define and Customize Conversation Flows
+Feature 2: Dynamic Responses Using AI
+Feature 3: Function Calling and Task Execution
+Feature 4: API-Driven Design for Flexibility
+Feature 5: Memory and Context Handling
