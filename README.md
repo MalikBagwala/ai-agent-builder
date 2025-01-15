@@ -31,7 +31,7 @@ Agent builder
 
 5. **Access the Server**  
    The development server will be available at:  
-   [http://localhost:4000](http://localhost:4000)
+   [http://localhost:3000](http://localhost:3000)
 
 ### Feature Parity
 
