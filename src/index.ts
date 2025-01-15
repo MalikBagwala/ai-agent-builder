@@ -98,40 +98,43 @@ let conversationGraph: ConversationGraph = {
   nodes: {
     intro: {
       systemInstructions: `
-        You are a helpful Sales Agent. 
-        Greet the user and introduce yourself. 
-        Then transition to 'collectName'.
+        Greet the user warmly and introduce yourself as "I am a Sales Agent here to assist you." 
+        Ask the user for their name (e.g., "May I know your name, please?"). 
+        Once the user responds, transition to 'collectName'.
       `,
       next: "collectName",
     },
     collectName: {
       systemInstructions: `
-        Ask the user for their name. 
-        Wait for user response, then store it. 
-        Once name is collected, transition to 'collectNeeds'.
+        Confirm the user's name (e.g., "Nice to meet you, [name]!"). 
+        Politely ask them about their main needs or interests regarding the product 
+        (e.g., "What brings you here today? What are you looking for?"). 
+        Once the user responds, transition to 'collectNeeds'.
       `,
       next: "collectNeeds",
     },
     collectNeeds: {
       systemInstructions: `
-        Ask the user about their main needs or interests regarding the product. 
-        Wait for user response, then store it. 
-        If user has product questions, answer them using RAG. 
-        Then transition to 'offerFollowUp'.
+        Listen to the user's main needs or interests and store their response. 
+        If the user asks questions about the product, provide helpful answers using RAG. 
+        After addressing their needs or questions, politely ask if they'd like to schedule a follow-up call 
+        or receive additional details. 
+        Transition to 'offerFollowUp'.
       `,
       next: "offerFollowUp",
     },
     offerFollowUp: {
       systemInstructions: `
-        Offer to schedule a follow-up call or provide additional info. 
-        If user agrees, call function 'saveLeadData'. 
-        Then transition to 'farewell'.
+        Offer to schedule a follow-up call or send additional information (e.g., "Would you like me to schedule 
+        a follow-up call or send more details to your email?"). 
+        If the user agrees, call the function 'saveLeadData' to store their information. 
+        Once the action is completed, thank them for their time and transition to 'farewell'.
       `,
       next: "farewell",
     },
     farewell: {
       systemInstructions: `
-        Thank the user for chatting. 
+        Thank the user for chatting (e.g., "Thank you for your time, [name]! If you have any further questions, feel free to reach out."). 
         End the conversation gracefully.
       `,
       next: null,
@@ -143,29 +146,46 @@ let conversationGraph: ConversationGraph = {
 // 4) Orchestrating LLM + Graph
 // ---------------------------
 
-async function fakeLLMCall(
+async function llmCall(
   systemPrompt: string,
   userMessage: string
 ): Promise<string> {
-  if (userMessage.includes("call function: saveLeadData")) {
-    return JSON.stringify({
-      functionCall: {
-        name: "saveLeadData",
-        arguments: {
-          info: "User is interested in scheduling a follow-up.",
-        },
-      },
-    });
-  }
-
-  return `LLM Response: (Pretend I'm an advanced model) - 
-  System says: "${systemPrompt.trim()}"
-  User says: "${userMessage.trim()}"
-
-  (Response in plain text. This is a placeholder LLM response.)
+  // Combine the system instructions and user message into a single prompt
+  const fullPrompt = `Conversation Graph: ${JSON.stringify(conversationGraph)}
+System Instructions:
+${systemPrompt.trim()}
+User:
+${userMessage.trim()}
+Assistant:
   `;
-}
 
+  try {
+    const response = await fetch("http://127.0.0.1:1234/v1/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: fullPrompt,
+        temperature: 0.4,
+        max_tokens: 30,
+        stream: false,
+        stop: ["Answer:", "\n"],
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`LLM request failed with status: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    // Extract and return the generated text
+    const generatedText = (data as any)?.choices?.[0]?.text?.trim() || "";
+    return generatedText;
+  } catch (error) {
+    console.error("Error calling LLM:", error);
+    return "I'm sorry, something went wrong while generating a response.";
+  }
+}
 async function handleConversation(
   sessionId: string,
   userMessage: string
@@ -203,7 +223,7 @@ async function handleConversation(
     ${contextSection}
   `;
 
-  const llmResponseRaw = await fakeLLMCall(systemPrompt, userMessage);
+  const llmResponseRaw = await llmCall(systemPrompt, userMessage);
 
   let functionCall: FunctionCall | null = null;
   try {
@@ -282,6 +302,7 @@ app.post("/api/agent/message", async (req: Request, res: Response) => {
 
   const result = await handleConversation(sessionId, message);
 
+  console.log(JSON.stringify(userSessions), "SESSIONS");
   res.json({
     reply: result.reply,
     nextState: result.nextState,

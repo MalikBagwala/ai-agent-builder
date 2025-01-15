@@ -1,6 +1,6 @@
 ## RxAssistant - AI Builder
 
-Agent builder
+Agent builder similar to Ada uses Llama3.2-1B-Instruct model under the hood.
 
 ### Prerequisites
 
