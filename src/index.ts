@@ -3,6 +3,8 @@ const fastify = Fastify({
   logger: true,
 });
 
+import Groq from "groq-sdk";
+
 // Declare a route
 fastify.get("/", async function handler(request, reply) {
   return { hello: "world" };
