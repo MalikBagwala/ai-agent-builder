@@ -2,6 +2,10 @@
 
 Agent builder similar to Ada. uses embeddings and production grade llm to generate responses
 
+### Demo Video
+
+https://github.com/user-attachments/assets/2402c657-6f28-4b2c-a944-8b66aa249cb5
+
 ### Prerequisites
 
 - Ensure you have a `.env` file loaded with the necessary configurations.
@@ -47,3 +51,5 @@ Agent builder similar to Ada. uses embeddings and production grade llm to genera
 2. Pinecone - Vector DB for knowledge base
 3. Goq and Hugging Face - Production grade LLM with Embeddings
 4. SQLite - For storing structured data
+
+
