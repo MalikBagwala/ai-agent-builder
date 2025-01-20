@@ -12,6 +12,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@huggingface/hub": "^1.0.0",
+    "@huggingface/inference": "^3.0.0",
     "@pinecone-database/pinecone": "^4.1.0",
     "axios": "^1.7.9",
     "cors": "^2.8.5",

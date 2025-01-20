@@ -3,7 +3,7 @@ import Fastify, { FastifyReply, FastifyRequest } from "fastify";
 import fetch from "node-fetch";
 import { open } from "sqlite";
 import sqlite3 from "sqlite3";
-import { Groq } from "groq-sdk";
+import { HfInference } from "@huggingface/inference";
 
 const fastify = Fastify({
   logger: true,
@@ -74,14 +74,14 @@ async function initPinecone() {
 }
 
 // --------------------------------------------------------------------
-// Groq SDK Initialization
+// Hugging Face Inference Initialization
+//   We will call HF's feature extraction endpoint for embeddings
 // --------------------------------------------------------------------
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
-});
+const hf = new HfInference(process.env.HF_API_KEY);
 
-async function getGroqEmbeddings(texts: string[]): Promise<number[][]> {
-  // Filter out any non-string or empty string entries
+// Example model: sentence-transformers/all-MiniLM-L6-v2
+// Model page: https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
+async function getHuggingFaceEmbeddings(texts: string[]): Promise<number[][]> {
   const validTexts = texts.filter(
     (text, idx) =>
       typeof text === "string" && text.trim().length > 0 && idx < 100
@@ -90,21 +90,29 @@ async function getGroqEmbeddings(texts: string[]): Promise<number[][]> {
   if (validTexts.length === 0) {
     throw new Error("No valid input texts provided for embedding.");
   }
-  console.log(validTexts, "VALID TEXTS");
-  try {
-    const response = await groq.embeddings.create({
-      model: "llama-3.3-70b-versatile",
-      input: validTexts,
-    });
-    console.log(response.data, "EMBED DATA");
 
-    // Assuming the response structure contains embeddings in 'data'
-    return response.data.map((embedding: any) => embedding.embedding);
-  } catch (error) {
-    console.error("Error generating embeddings:", error);
-    throw error;
+  // Some Hugging Face models can process a single string at a time.
+  // For simplicity, we’ll call featureExtraction in a loop.
+  const embeddings: number[][] = [];
+
+  for (const text of validTexts) {
+    try {
+      // This returns an array of floats representing the embedding for the text
+      const response = await hf.featureExtraction({
+        model: "sentence-transformers/all-MiniLM-L6-v2",
+        inputs: text,
+      });
+      // Ensure the response is a flattened number array
+      embeddings.push(response as number[]);
+    } catch (error) {
+      console.error("Error generating embeddings for text:", text, error);
+      throw error;
+    }
   }
+
+  return embeddings;
 }
+
 // --------------------------------------------------------------------
 // Fetch CSV and Ingest into Pinecone
 // --------------------------------------------------------------------
@@ -128,7 +136,8 @@ async function ingestCsvIntoPinecone(
 ) {
   const lines = await fetchCsvLines(csvUrl);
   console.log(lines, "LINES");
-  const embeddings = await getGroqEmbeddings(lines);
+  // Replace the Groq-based getGroqEmbeddings with our Hugging Face embeddings
+  const embeddings = await getHuggingFaceEmbeddings(lines);
 
   const vectors = lines.map((line, i) => ({
     id: `${agentId}-${Date.now()}-${i}`,
@@ -303,7 +312,10 @@ fastify.post(
           break;
 
         case "askQuestions":
-          const embeddings = await getGroqEmbeddings([input]);
+          // Generate embeddings for the user’s input
+          const embeddings = await getHuggingFaceEmbeddings([input]);
+
+          // Query Pinecone
           const index = pinecone.Index(PINECONE_INDEX);
           const pineconeResults = await index.query({
             vector: embeddings[0],
