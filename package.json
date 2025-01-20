@@ -1,5 +1,5 @@
 {
-  "name": "dock-assignment-api",
+  "name": "ai-agent-builder",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
@@ -12,13 +12,17 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@apollo/server": "^4.11.2",
-    "@prisma/client": "6.2.1",
+    "@huggingface/hub": "^1.0.0",
+    "@huggingface/inference": "^3.0.0",
+    "@pinecone-database/pinecone": "^4.1.0",
     "axios": "^1.7.9",
-    "graphql": "^16.10.0",
-    "graphql-tag": "^2.12.6",
-    "prisma": "^6.2.1",
-    "redis": "^4.7.0"
+    "cors": "^2.8.5",
+    "fastify": "^5.2.1",
+    "groq-sdk": "^0.12.0",
+    "node-fetch": "^3.3.2",
+    "openai": "^4.79.1",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7"
   },
   "devDependencies": {
     "@types/node": "^22.10.3",

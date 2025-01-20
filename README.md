@@ -1,6 +1,6 @@
 ## RxAssistant - AI Builder
 
-Agent builder
+Agent builder similar to Ada. uses embeddings and production grade llm to generate responses
 
 ### Prerequisites
 
@@ -31,4 +31,19 @@ Agent builder
 
 5. **Access the Server**  
    The development server will be available at:  
-   [http://localhost:4000](http://localhost:4000)
+   [http://localhost:3000](http://localhost:3000)
+
+### Feature Parity
+
+1. Define and Customize Conversation Flows
+2. Dynamic Responses Using AI
+3. Function Calling and Task Execution
+4. API-Driven Design for Flexibility
+5. Memory and Context Handling
+
+### Tech Stack
+
+1. TypeScript / NodeJS / Fastify - Backend Server
+2. Pinecone - Vector DB for knowledge base
+3. Goq and Hugging Face - Production grade LLM with Embeddings
+4. SQLite - For storing structured data
