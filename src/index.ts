@@ -81,11 +81,18 @@ const groq = new Groq({
 });
 
 async function getGroqEmbeddings(texts: string[]): Promise<number[][]> {
-  const response = await groq.embeddings({
-    model: "llma",
-    input: texts,
-  });
-  return response.embeddings;
+  try {
+    const response = await groq.embeddings.create({
+      model: "nomic-embed-text-v1_5",
+      input: texts,
+    });
+
+    // Assuming the response structure contains embeddings in 'data'
+    return response.data.map((embedding: any) => embedding.embedding);
+  } catch (error) {
+    console.error("Error generating embeddings:", error);
+    throw error;
+  }
 }
 
 // --------------------------------------------------------------------
