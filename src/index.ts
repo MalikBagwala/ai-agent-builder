@@ -228,27 +228,138 @@ fastify.post(
 );
 
 // --------------------------------------------------------------------
-// 9. (Optional) Example of storing “long-term data” in SQLite
-//    You can create additional routes to store user info or conversation logs.
+// Utility Functions
+// --------------------------------------------------------------------
+async function getCurrentSession(sessionId: string, agentId: number) {
+  const session = await db.get(
+    `SELECT * FROM sessions WHERE sessionId = ? AND agentId = ?`,
+    [sessionId, agentId]
+  );
+
+  if (!session) {
+    // Start a new session with the first workflow node
+    const workflow = await db.get(
+      `SELECT workflowJson FROM workflows WHERE agentId = ?`,
+      [agentId]
+    );
+
+    if (!workflow) throw new Error(`Workflow not found for agent ${agentId}`);
+
+    const parsedWorkflow = JSON.parse(workflow.workflowJson);
+    const initialNode = parsedWorkflow[0]?.id;
+
+    await db.run(
+      `INSERT INTO sessions (sessionId, agentId, currentNode) VALUES (?, ?, ?)`,
+      [sessionId, agentId, initialNode]
+    );
+
+    return { sessionId, agentId, currentNode: initialNode, context: {} };
+  }
+
+  return session;
+}
+
+async function updateSession(
+  sessionId: string,
+  agentId: number,
+  nextNode: string,
+  context: object
+) {
+  await db.run(
+    `UPDATE sessions SET currentNode = ?, context = ? WHERE sessionId = ? AND agentId = ?`,
+    [nextNode, JSON.stringify(context), sessionId, agentId]
+  );
+}
+
+// --------------------------------------------------------------------
+// Single Endpoint: /agent/:agentId/interact
 // --------------------------------------------------------------------
 fastify.post(
-  "/agent/:agentId/storeLongTermData",
+  "/agent/:agentId/interact",
   async (request: FastifyRequest, reply: FastifyReply) => {
+    const { agentId } = request.params as { agentId: string };
+    const { sessionId, input } = request.body as {
+      sessionId: string;
+      input: string;
+    };
+
     try {
-      const agentId = Number((request.params as { agentId: string }).agentId);
-      const { data } = request.body as { data: string };
+      // Get or initialize the session
+      const session = await getCurrentSession(sessionId, Number(agentId));
+      const { currentNode, context } = session;
 
-      await db.run(`INSERT INTO long_term_data (agentId, data) VALUES (?, ?)`, [
-        agentId,
-        data,
-      ]);
+      // Fetch the workflow for the agent
+      const workflow = await db.get(
+        `SELECT workflowJson FROM workflows WHERE agentId = ?`,
+        [agentId]
+      );
 
+      if (!workflow) throw new Error(`Workflow not found for agent ${agentId}`);
+
+      const parsedWorkflow = JSON.parse(workflow.workflowJson);
+      const currentStep = parsedWorkflow.find(
+        (node: any) => node.id === currentNode
+      );
+
+      if (!currentStep)
+        throw new Error(`Invalid workflow step: ${currentNode}`);
+
+      // Perform the action for the current step
+      let responseMessage: string;
+
+      switch (currentStep.id) {
+        case "greet":
+          responseMessage = "Hello! How can I help you today?";
+          break;
+
+        case "collectInformation":
+          context["userInfo"] = input; // Save user info in context
+          responseMessage = "Thank you! Your information has been saved.";
+          break;
+
+        case "askQuestions":
+          // Example: Use Pinecone to retrieve relevant information
+          const embeddings = await client.embeddings.create({
+            model: "text-embedding-ada-002",
+            input,
+          });
+
+          const index = pinecone.Index(PINECONE_INDEX);
+          const pineconeResults = await index.query({
+            vector: embeddings.data[0].embedding,
+            topK: 3,
+            includeMetadata: true,
+          });
+
+          responseMessage = `Here is the information I found: ${pineconeResults.matches
+            .map((match: any) => match.metadata.content)
+            .join(", ")}`;
+          break;
+
+        case "followUp":
+          responseMessage =
+            "I’ve sent a follow-up email to your registered address.";
+          break;
+
+        default:
+          responseMessage = "I'm not sure how to proceed.";
+      }
+
+      // Move to the next workflow node
+      const nextNode = currentStep.nextNode || null;
+      if (nextNode) {
+        await updateSession(sessionId, Number(agentId), nextNode, context);
+      }
+
+      // Send the response
       reply.send({
         status: "success",
-        message: "Data stored successfully",
+        message: responseMessage,
+        nextNode,
+        context,
       });
     } catch (error) {
-      console.error("Error storing data:", error);
+      console.error("Error in interaction:", error);
       reply.status(500).send({
         status: "error",
         message: (error as Error).message,
@@ -256,37 +367,6 @@ fastify.post(
     }
   }
 );
-
-// --------------------------------------------------------------------
-// 10. Example “function call” stubs
-//     In a real AI agent system, you might define endpoints for each
-//     node in the workflow (like greet, collect info, etc.).
-// --------------------------------------------------------------------
-
-// Example: greet user
-fastify.post(
-  "/agent/:agentId/greet",
-  async (request: FastifyRequest, reply: FastifyReply) => {
-    // In a real scenario, you might track conversation state, etc.
-    return reply.send({ message: "Hello! How can I help you today?" });
-  }
-);
-
-// Example: collect information
-fastify.post(
-  "/agent/:agentId/collectInformation",
-  async (request: FastifyRequest, reply: FastifyReply) => {
-    // Store user info in DB if needed
-    // e.g. name, mobile, email...
-    // For demonstration, just returning a stub
-    return reply.send({
-      message: "Please provide your name, mobile number, and email.",
-    });
-  }
-);
-
-// And so on for the other workflow steps...
-
 // --------------------------------------------------------------------
 // 11. Start the server
 // --------------------------------------------------------------------
