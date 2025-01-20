@@ -1,24 +1,18 @@
-/***************************************************************************
- * agentBuilder.ts
- ***************************************************************************/
-
 import { Pinecone } from "@pinecone-database/pinecone";
 import Fastify, { FastifyReply, FastifyRequest } from "fastify";
 import fetch from "node-fetch";
-import OpenAI from "openai";
 import { open } from "sqlite";
 import sqlite3 from "sqlite3";
+import { Groq } from "groq-sdk";
 
 const fastify = Fastify({
   logger: true,
 });
 
 // --------------------------------------------------------------------
-// 2. Initialize SQLite Database
-//    - We'll create or open the local DB file named "agentDatabase.db"
-//    - We'll make sure our tables exist for storing agents & workflows.
+// SQLite Initialization
 // --------------------------------------------------------------------
-let db: any; // We will open it in an async function below
+let db: any;
 
 async function initDB() {
   db = await open({
@@ -26,7 +20,6 @@ async function initDB() {
     driver: sqlite3.Database,
   });
 
-  // Create Agents table if not exists
   await db.run(`
     CREATE TABLE IF NOT EXISTS agents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,8 +30,6 @@ async function initDB() {
     );
   `);
 
-  // Create Workflow table if not exists
-  // For simplicity, storing each workflow node as a JSON string
   await db.run(`
     CREATE TABLE IF NOT EXISTS workflows (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,8 +39,6 @@ async function initDB() {
     );
   `);
 
-  // Create a table to store user data or conversation info if needed
-  // We'll just show an example "long_term_data" table:
   await db.run(`
     CREATE TABLE IF NOT EXISTS long_term_data (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,8 +47,21 @@ async function initDB() {
       FOREIGN KEY (agentId) REFERENCES agents(id)
     );
   `);
+
+  await db.run(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      sessionId TEXT PRIMARY KEY,
+      agentId INTEGER NOT NULL,
+      currentNode TEXT NOT NULL,
+      context TEXT,
+      FOREIGN KEY (agentId) REFERENCES agents(id)
+    );
+  `);
 }
 
+// --------------------------------------------------------------------
+// Pinecone Initialization
+// --------------------------------------------------------------------
 const PINECONE_API_KEY = process.env.PINECONE_API_KEY;
 const PINECONE_INDEX = "agent-knowledge-index";
 
@@ -68,21 +70,26 @@ const pinecone = new Pinecone({
 });
 
 async function initPinecone() {
-  // Ensure the index is created or accessible
-  // If the index doesn't exist, you'd create it in Pinecone’s dashboard or via their API
-  // Here we just retrieve it:
   return pinecone.Index(PINECONE_INDEX);
 }
 
 // --------------------------------------------------------------------
-// 4. Initialize OpenAI (for text embedding, etc.)
+// Groq SDK Initialization
 // --------------------------------------------------------------------
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const client = new OpenAI({ apiKey: OPENAI_API_KEY });
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY,
+});
+
+async function getGroqEmbeddings(texts: string[]): Promise<number[][]> {
+  const response = await groq.embeddings({
+    model: "llma",
+    input: texts,
+  });
+  return response.embeddings;
+}
 
 // --------------------------------------------------------------------
-// 5. Utility: Fetch CSV from URL and parse into lines
-//    - You can replace this with a more robust CSV parser if needed
+// Fetch CSV and Ingest into Pinecone
 // --------------------------------------------------------------------
 async function fetchCsvLines(csvUrl: string): Promise<string[]> {
   const response = await fetch(csvUrl);
@@ -90,46 +97,20 @@ async function fetchCsvLines(csvUrl: string): Promise<string[]> {
     throw new Error(`Failed to fetch CSV from ${csvUrl}`);
   }
   const csv = await response.text();
-  // Simple line-based splitting
-  const lines = csv
+  return csv
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
-  return lines;
 }
 
-// --------------------------------------------------------------------
-// 6. Utility: Convert text to embeddings using OpenAI
-// --------------------------------------------------------------------
-async function getEmbeddings(texts: string[]): Promise<number[][]> {
-  try {
-    const response = await client.embeddings.create({
-      model: "text-embedding-ada-002",
-      input: texts,
-    });
-
-    return response.data.map((item) => item.embedding);
-  } catch (err) {
-    console.error("Error creating embeddings", err);
-    throw err;
-  }
-}
-
-// --------------------------------------------------------------------
-// 7. Ingest CSV docs into Pinecone
-//    - Each row (line) in the CSV is embedded and stored
-// --------------------------------------------------------------------
 async function ingestCsvIntoPinecone(
   index: any,
   csvUrl: string,
   description: string,
   agentId: number
 ) {
-  // Step 1: Fetch lines from CSV
   const lines = await fetchCsvLines(csvUrl);
-
-  // Step 2: Create embeddings
-  const embeddings = await getEmbeddings(lines);
+  const embeddings = await getGroqEmbeddings(lines);
 
   const vectors = lines.map((line, i) => ({
     id: `${agentId}-${Date.now()}-${i}`,
@@ -141,17 +122,12 @@ async function ingestCsvIntoPinecone(
     },
   }));
 
-  // Pinecone upsert
-  await index.upsert({ upsertRequest: { vectors } });
+  await index.upsert({ vectors });
 }
 
 // --------------------------------------------------------------------
-// 8. Route: /agent/create
-//    - Creates an agent record in SQLite
-//    - Ingests knowledge docs (CSVs) into Pinecone
-//    - Stores the workflow in SQLite
+// Agent Creation Route: /agent/create
 // --------------------------------------------------------------------
-
 interface KnowledgeDoc {
   type: string; // "csv", "pdf", etc.
   source: string; // URL or other location
@@ -175,7 +151,7 @@ interface CreateAgentPayload {
 
 fastify.post(
   "/agent/create",
-  async function handler(request: FastifyRequest, reply: FastifyReply) {
+  async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const body = request.body as CreateAgentPayload;
 
@@ -194,7 +170,7 @@ fastify.post(
         [agentId, workflowJson]
       );
 
-      // 3. Ingest each knowledge doc into Pinecone
+      // 3. Ingest knowledge docs into Pinecone
       const index = await initPinecone();
 
       for (const doc of body.knowledge_docs) {
@@ -206,12 +182,10 @@ fastify.post(
             agentId
           );
         } else {
-          // Extend logic for PDF or other doc types as needed
-          console.log(`Skipping doc type ${doc.type} for now.`);
+          console.log(`Skipping unsupported doc type: ${doc.type}`);
         }
       }
 
-      // 4. Return success
       reply.send({
         status: "success",
         message: "Agent created successfully",
@@ -228,7 +202,7 @@ fastify.post(
 );
 
 // --------------------------------------------------------------------
-// Utility Functions
+// Single Interaction Endpoint: /agent/:agentId/interact
 // --------------------------------------------------------------------
 async function getCurrentSession(sessionId: string, agentId: number) {
   const session = await db.get(
@@ -237,7 +211,6 @@ async function getCurrentSession(sessionId: string, agentId: number) {
   );
 
   if (!session) {
-    // Start a new session with the first workflow node
     const workflow = await db.get(
       `SELECT workflowJson FROM workflows WHERE agentId = ?`,
       [agentId]
@@ -271,9 +244,6 @@ async function updateSession(
   );
 }
 
-// --------------------------------------------------------------------
-// Single Endpoint: /agent/:agentId/interact
-// --------------------------------------------------------------------
 fastify.post(
   "/agent/:agentId/interact",
   async (request: FastifyRequest, reply: FastifyReply) => {
@@ -284,11 +254,9 @@ fastify.post(
     };
 
     try {
-      // Get or initialize the session
       const session = await getCurrentSession(sessionId, Number(agentId));
       const { currentNode, context } = session;
 
-      // Fetch the workflow for the agent
       const workflow = await db.get(
         `SELECT workflowJson FROM workflows WHERE agentId = ?`,
         [agentId]
@@ -304,54 +272,45 @@ fastify.post(
       if (!currentStep)
         throw new Error(`Invalid workflow step: ${currentNode}`);
 
-      // Perform the action for the current step
       let responseMessage: string;
 
       switch (currentStep.id) {
         case "greet":
-          responseMessage = "Hello! How can I help you today?";
+          responseMessage = "Hello! How can I assist you today?";
           break;
 
         case "collectInformation":
-          context["userInfo"] = input; // Save user info in context
+          context["userInfo"] = input;
           responseMessage = "Thank you! Your information has been saved.";
           break;
 
         case "askQuestions":
-          // Example: Use Pinecone to retrieve relevant information
-          const embeddings = await client.embeddings.create({
-            model: "text-embedding-ada-002",
-            input,
-          });
-
+          const embeddings = await getGroqEmbeddings([input]);
           const index = pinecone.Index(PINECONE_INDEX);
           const pineconeResults = await index.query({
-            vector: embeddings.data[0].embedding,
+            vector: embeddings[0],
             topK: 3,
             includeMetadata: true,
           });
 
-          responseMessage = `Here is the information I found: ${pineconeResults.matches
+          responseMessage = `Here’s what I found: ${pineconeResults.matches
             .map((match: any) => match.metadata.content)
             .join(", ")}`;
           break;
 
         case "followUp":
-          responseMessage =
-            "I’ve sent a follow-up email to your registered address.";
+          responseMessage = "I’ve sent a follow-up email to your address.";
           break;
 
         default:
-          responseMessage = "I'm not sure how to proceed.";
+          responseMessage = "I’m not sure how to proceed.";
       }
 
-      // Move to the next workflow node
       const nextNode = currentStep.nextNode || null;
       if (nextNode) {
         await updateSession(sessionId, Number(agentId), nextNode, context);
       }
 
-      // Send the response
       reply.send({
         status: "success",
         message: responseMessage,
@@ -367,8 +326,9 @@ fastify.post(
     }
   }
 );
+
 // --------------------------------------------------------------------
-// 11. Start the server
+// Start the Server
 // --------------------------------------------------------------------
 async function startServer() {
   await initDB();
