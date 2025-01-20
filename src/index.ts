@@ -12,7 +12,6 @@ const fastify = Fastify({
 
 // --------------------------------------------------------------------
 // Environment / Feature Flags
-//   Following your request:
 //   When DISABLE_EMBEDDINGS === "0", we DISABLE embedding logic.
 // --------------------------------------------------------------------
 const disableEmbeddings = process.env.DISABLE_EMBEDDINGS === "0";
@@ -77,26 +76,21 @@ const pinecone = new Pinecone({
   apiKey: PINECONE_API_KEY,
 });
 
-// Wrapper to gracefully handle Pinecone usage
 async function initPinecone() {
   if (disableEmbeddings) {
-    return null; // or a mock object
+    return null;
   }
   return pinecone.Index(PINECONE_INDEX);
 }
 
 // --------------------------------------------------------------------
-// Hugging Face Inference Initialization
-//   (Used only if embeddings are NOT disabled)
+// Hugging Face Inference Initialization (Used unless embeddings are disabled)
 // --------------------------------------------------------------------
 const hf = new HfInference(process.env.HF_API_KEY);
 
-// Example model: sentence-transformers/all-MiniLM-L6-v2
-// https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
 async function getHuggingFaceEmbeddings(texts: string[]): Promise<number[][]> {
   if (disableEmbeddings) {
-    // If disabled, return zeros or an empty array if you'd prefer
-    // but returning all zeros might keep shape consistent.
+    // Return zero vectors if embeddings are disabled
     return texts.map(() => Array(384).fill(0));
   }
 
@@ -117,7 +111,6 @@ async function getHuggingFaceEmbeddings(texts: string[]): Promise<number[][]> {
         model: "sentence-transformers/all-MiniLM-L6-v2",
         inputs: text,
       });
-      // Ensure the response is a flattened number array
       embeddings.push(response as number[]);
     } catch (error) {
       console.error("Error generating embeddings for text:", text, error);
@@ -135,13 +128,13 @@ const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
 
-// Helper function to call the Groq LLM
+// A helper function to call the Groq LLM
 async function generateLLMResponse(
   userMessage: string,
   context: string
 ): Promise<string> {
   try {
-    // Example: using "llama-3.3-70b-versatile" – pick a model from Groq's docs
+    // Using an example model from Groq
     const result = await groq.chat.completions.create({
       model: "llama-3.3-70b-versatile",
       messages: [
@@ -156,7 +149,7 @@ async function generateLLMResponse(
         },
       ],
     });
-    // Return the LLM’s response
+
     if (result?.choices?.length) {
       return result.choices[0].message.content || "Sorry, I have no response.";
     }
@@ -188,7 +181,6 @@ async function ingestCsvIntoPinecone(
   description: string,
   agentId: number
 ) {
-  // If embeddings disabled, skip ingesting
   if (disableEmbeddings) {
     console.log("Embeddings are disabled; skipping CSV ingestion to Pinecone");
     return;
@@ -300,6 +292,7 @@ async function getCurrentSession(sessionId: string, agentId: number) {
     [sessionId, agentId]
   );
 
+  // Create a new session if one doesn't exist
   if (!session) {
     const workflow = await db.get(
       `SELECT workflowJson FROM workflows WHERE agentId = ?`,
@@ -309,11 +302,12 @@ async function getCurrentSession(sessionId: string, agentId: number) {
     if (!workflow) throw new Error(`Workflow not found for agent ${agentId}`);
 
     const parsedWorkflow = JSON.parse(workflow.workflowJson);
-    const initialNode = parsedWorkflow[0]?.id;
+    // Use the first node in the workflow or default to "greet"
+    const initialNode = parsedWorkflow[0]?.id || "greet";
 
     await db.run(
       `INSERT INTO sessions (sessionId, agentId, currentNode, context) VALUES (?, ?, ?, ?)`,
-      [sessionId, agentId, initialNode, JSON.stringify({})] // Initialize context as an empty object
+      [sessionId, agentId, initialNode, JSON.stringify({})]
     );
 
     return { sessionId, agentId, currentNode: initialNode, context: {} };
@@ -334,7 +328,7 @@ async function updateSession(
 ) {
   await db.run(
     `UPDATE sessions SET currentNode = ?, context = ? WHERE sessionId = ? AND agentId = ?`,
-    [nextNode, JSON.stringify(context), sessionId, agentId] // Serialize context as a string
+    [nextNode, JSON.stringify(context), sessionId, agentId]
   );
 }
 
@@ -351,7 +345,7 @@ fastify.post(
       const session = await getCurrentSession(sessionId, Number(agentId));
       const { currentNode, context } = session;
 
-      // Grab the workflow
+      // Grab the workflow for the agent
       const workflow = await db.get(
         `SELECT workflowJson FROM workflows WHERE agentId = ?`,
         [agentId]
@@ -362,26 +356,41 @@ fastify.post(
       const currentStep = parsedWorkflow.find(
         (node: any) => node.id === currentNode
       );
+
       if (!currentStep) {
         throw new Error(`Invalid workflow step: ${currentNode}`);
       }
 
       let responseMessage: string;
+      // We'll pass "input" (the user's message) and some relevant context
+      // to the LLM in every step. The only difference is how we set that context.
 
       switch (currentStep.id) {
-        case "greet":
-          // Could also do a Groq LLM call for a greeting if you like:
-          responseMessage = "Hello! How can I assist you today?";
+        case "greet": {
+          // Minimal context, just greet the user
+          responseMessage = await generateLLMResponse(
+            // userMessage
+            input || "User arrived; greet them politely.",
+            // context
+            "The user has just started interaction. Provide a friendly greeting."
+          );
           break;
+        }
 
-        case "collectInformation":
+        case "collectInformation": {
+          // Save user input in context
           context["userInfo"] = input;
-          // Another place we could call LLM to confirm we collected info
-          responseMessage = `Thank you! I have saved: "${input}" as your info.`;
+          responseMessage = await generateLLMResponse(
+            // userMessage
+            `The user provided this info: "${input}". Acknowledge and confirm saving it.`,
+            // context
+            "We store user info in context for future steps."
+          );
           break;
+        }
 
-        case "askQuestions":
-          // 1. Possibly embed and query Pinecone
+        case "askQuestions": {
+          // Possibly embed and query Pinecone
           let relevantContext =
             "No relevant context found (embeddings disabled).";
 
@@ -399,19 +408,31 @@ fastify.post(
               .join("\n");
           }
 
-          // 2. Now pass user input + relevantContext to the LLM
+          // Now pass user input + relevant context to the LLM
           responseMessage = await generateLLMResponse(input, relevantContext);
           break;
+        }
 
-        case "followUp":
-          // Possibly another LLM prompt for some final text
-          responseMessage = "I’ve sent a follow-up email to your address.";
+        case "followUp": {
+          // Possibly another LLM prompt for final text
+          responseMessage = await generateLLMResponse(
+            "Conclude the conversation by telling the user we've sent a follow-up email.",
+            "No additional context required."
+          );
           break;
+        }
 
-        default:
-          responseMessage = "I’m not sure how to proceed.";
+        default: {
+          // Provide a fallback LLM-based response
+          responseMessage = await generateLLMResponse(
+            `The user is at unknown step: ${currentStep.id}`,
+            "Workflow step is not recognized; provide a safe fallback answer."
+          );
+          break;
+        }
       }
 
+      // Move to the next step if specified
       const nextNode = currentStep.nextNode || null;
       if (nextNode) {
         await updateSession(sessionId, Number(agentId), nextNode, context);

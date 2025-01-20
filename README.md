@@ -1,6 +1,6 @@
 ## RxAssistant - AI Builder
 
-Agent builder similar to Ada uses Llama3.2-1B-Instruct model under the hood.
+Agent builder similar to Ada. uses embeddings and production grade llm to generate responses
 
 ### Prerequisites
 
@@ -45,5 +45,5 @@ Feature 5: Memory and Context Handling
 
 1. TypeScript / NodeJS / Fastify - Backend Server
 2. Pinecone - Vector DB for knowledge base
-3. Groq - Production grade LLM
+3. Goq and Hugging Face - Production grade LLM with Embeddings
 4. SQLite - For storing structured data
