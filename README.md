@@ -35,11 +35,11 @@ Agent builder similar to Ada. uses embeddings and production grade llm to genera
 
 ### Feature Parity
 
-Feature 1: Define and Customize Conversation Flows
-Feature 2: Dynamic Responses Using AI
-Feature 3: Function Calling and Task Execution
-Feature 4: API-Driven Design for Flexibility
-Feature 5: Memory and Context Handling
+1. Define and Customize Conversation Flows
+2. Dynamic Responses Using AI
+3. Function Calling and Task Execution
+4. API-Driven Design for Flexibility
+5. Memory and Context Handling
 
 ### Tech Stack
 
