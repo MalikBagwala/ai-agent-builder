@@ -81,11 +81,22 @@ const groq = new Groq({
 });
 
 async function getGroqEmbeddings(texts: string[]): Promise<number[][]> {
+  // Filter out any non-string or empty string entries
+  const validTexts = texts.filter(
+    (text, idx) =>
+      typeof text === "string" && text.trim().length > 0 && idx < 100
+  );
+
+  if (validTexts.length === 0) {
+    throw new Error("No valid input texts provided for embedding.");
+  }
+  console.log(validTexts, "VALID TEXTS");
   try {
     const response = await groq.embeddings.create({
-      model: "nomic-embed-text-v1_5",
-      input: texts,
+      model: "llama-3.3-70b-versatile",
+      input: validTexts,
     });
+    console.log(response.data, "EMBED DATA");
 
     // Assuming the response structure contains embeddings in 'data'
     return response.data.map((embedding: any) => embedding.embedding);
@@ -94,7 +105,6 @@ async function getGroqEmbeddings(texts: string[]): Promise<number[][]> {
     throw error;
   }
 }
-
 // --------------------------------------------------------------------
 // Fetch CSV and Ingest into Pinecone
 // --------------------------------------------------------------------
@@ -107,7 +117,7 @@ async function fetchCsvLines(csvUrl: string): Promise<string[]> {
   return csv
     .split("\n")
     .map((line) => line.trim())
-    .filter(Boolean);
+    .filter((a) => a);
 }
 
 async function ingestCsvIntoPinecone(
@@ -117,6 +127,7 @@ async function ingestCsvIntoPinecone(
   agentId: number
 ) {
   const lines = await fetchCsvLines(csvUrl);
+  console.log(lines, "LINES");
   const embeddings = await getGroqEmbeddings(lines);
 
   const vectors = lines.map((line, i) => ({
@@ -176,7 +187,7 @@ fastify.post(
         `INSERT INTO workflows (agentId, workflowJson) VALUES (?,?)`,
         [agentId, workflowJson]
       );
-
+      console.log("SQLITE SUCCESS");
       // 3. Ingest knowledge docs into Pinecone
       const index = await initPinecone();
 
