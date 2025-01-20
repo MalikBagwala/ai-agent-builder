@@ -2,7 +2,6 @@ import Fastify from "fastify";
 const fastify = Fastify({
   logger: true,
 });
-
 import Groq from "groq-sdk";
 
 // Declare a route

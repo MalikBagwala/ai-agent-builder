@@ -40,3 +40,10 @@ Feature 2: Dynamic Responses Using AI
 Feature 3: Function Calling and Task Execution
 Feature 4: API-Driven Design for Flexibility
 Feature 5: Memory and Context Handling
+
+### Tech Stack
+
+1. TypeScript / NodeJS / Fastify - Backend Server
+2. Pinecone - Vector DB for knowledge base
+3. Groq - Production grade LLM
+4. SQLite - For storing structured data
