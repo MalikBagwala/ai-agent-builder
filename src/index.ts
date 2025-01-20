@@ -4,10 +4,18 @@ import fetch from "node-fetch";
 import { open } from "sqlite";
 import sqlite3 from "sqlite3";
 import { HfInference } from "@huggingface/inference";
+import { Groq } from "groq-sdk";
 
 const fastify = Fastify({
   logger: true,
 });
+
+// --------------------------------------------------------------------
+// Environment / Feature Flags
+//   Following your request:
+//   When DISABLE_EMBEDDINGS === "0", we DISABLE embedding logic.
+// --------------------------------------------------------------------
+const disableEmbeddings = process.env.DISABLE_EMBEDDINGS === "0";
 
 // --------------------------------------------------------------------
 // SQLite Initialization
@@ -60,7 +68,7 @@ async function initDB() {
 }
 
 // --------------------------------------------------------------------
-// Pinecone Initialization
+// Pinecone Initialization (Used only if embeddings enabled)
 // --------------------------------------------------------------------
 const PINECONE_API_KEY = process.env.PINECONE_API_KEY;
 const PINECONE_INDEX = "agent-knowledge-index";
@@ -69,19 +77,29 @@ const pinecone = new Pinecone({
   apiKey: PINECONE_API_KEY,
 });
 
+// Wrapper to gracefully handle Pinecone usage
 async function initPinecone() {
+  if (disableEmbeddings) {
+    return null; // or a mock object
+  }
   return pinecone.Index(PINECONE_INDEX);
 }
 
 // --------------------------------------------------------------------
 // Hugging Face Inference Initialization
-//   We will call HF's feature extraction endpoint for embeddings
+//   (Used only if embeddings are NOT disabled)
 // --------------------------------------------------------------------
 const hf = new HfInference(process.env.HF_API_KEY);
 
 // Example model: sentence-transformers/all-MiniLM-L6-v2
-// Model page: https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
+// https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
 async function getHuggingFaceEmbeddings(texts: string[]): Promise<number[][]> {
+  if (disableEmbeddings) {
+    // If disabled, return zeros or an empty array if you'd prefer
+    // but returning all zeros might keep shape consistent.
+    return texts.map(() => Array(384).fill(0));
+  }
+
   const validTexts = texts.filter(
     (text, idx) =>
       typeof text === "string" && text.trim().length > 0 && idx < 100
@@ -91,13 +109,10 @@ async function getHuggingFaceEmbeddings(texts: string[]): Promise<number[][]> {
     throw new Error("No valid input texts provided for embedding.");
   }
 
-  // Some Hugging Face models can process a single string at a time.
-  // For simplicity, we’ll call featureExtraction in a loop.
   const embeddings: number[][] = [];
 
   for (const text of validTexts) {
     try {
-      // This returns an array of floats representing the embedding for the text
       const response = await hf.featureExtraction({
         model: "sentence-transformers/all-MiniLM-L6-v2",
         inputs: text,
@@ -111,6 +126,45 @@ async function getHuggingFaceEmbeddings(texts: string[]): Promise<number[][]> {
   }
 
   return embeddings;
+}
+
+// --------------------------------------------------------------------
+// GROQ SDK for LLM Generation of "pleasing" responses
+// --------------------------------------------------------------------
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY,
+});
+
+// Helper function to call the Groq LLM
+async function generateLLMResponse(
+  userMessage: string,
+  context: string
+): Promise<string> {
+  try {
+    // Example: using "llama-3.3-70b-versatile" – pick a model from Groq's docs
+    const result = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a helpful AI assistant. Use the context to provide a pleasing and concise answer. Keep it relevant, but well-phrased.",
+        },
+        {
+          role: "user",
+          content: `User's query:\n${userMessage}\nRelevant Context:\n${context}`,
+        },
+      ],
+    });
+    // Return the LLM’s response
+    if (result?.choices?.length) {
+      return result.choices[0].message.content || "Sorry, I have no response.";
+    }
+    return "No response from LLM.";
+  } catch (err) {
+    console.error("Error calling LLM with Groq:", err);
+    return "Sorry, I'm having trouble generating a response right now.";
+  }
 }
 
 // --------------------------------------------------------------------
@@ -134,9 +188,14 @@ async function ingestCsvIntoPinecone(
   description: string,
   agentId: number
 ) {
+  // If embeddings disabled, skip ingesting
+  if (disableEmbeddings) {
+    console.log("Embeddings are disabled; skipping CSV ingestion to Pinecone");
+    return;
+  }
+
   const lines = await fetchCsvLines(csvUrl);
-  console.log(lines, "LINES");
-  // Replace the Groq-based getGroqEmbeddings with our Hugging Face embeddings
+  console.log("LINES", lines);
   const embeddings = await getHuggingFaceEmbeddings(lines);
 
   const vectors = lines.map((line, i) => ({
@@ -197,20 +256,24 @@ fastify.post(
         [agentId, workflowJson]
       );
       console.log("SQLITE SUCCESS");
-      // 3. Ingest knowledge docs into Pinecone
-      const index = await initPinecone();
 
-      for (const doc of body.knowledge_docs) {
-        if (doc.type === "csv") {
-          await ingestCsvIntoPinecone(
-            index,
-            doc.source,
-            doc.description,
-            agentId
-          );
-        } else {
-          console.log(`Skipping unsupported doc type: ${doc.type}`);
+      // 3. If embeddings are enabled, ingest knowledge docs into Pinecone
+      const index = await initPinecone();
+      if (index && !disableEmbeddings) {
+        for (const doc of body.knowledge_docs) {
+          if (doc.type === "csv") {
+            await ingestCsvIntoPinecone(
+              index,
+              doc.source,
+              doc.description,
+              agentId
+            );
+          } else {
+            console.log(`Skipping unsupported doc type: ${doc.type}`);
+          }
         }
+      } else {
+        console.log("Embeddings disabled; skipping doc ingestion.");
       }
 
       reply.send({
@@ -246,7 +309,7 @@ async function getCurrentSession(sessionId: string, agentId: number) {
     if (!workflow) throw new Error(`Workflow not found for agent ${agentId}`);
 
     const parsedWorkflow = JSON.parse(workflow.workflowJson);
-    const initialNode = parsedWorkflow[0]?.id;
+    const initialNode = parsedWorkflow[0]?.id || "greet";
 
     await db.run(
       `INSERT INTO sessions (sessionId, agentId, currentNode) VALUES (?, ?, ?)`,
@@ -284,51 +347,60 @@ fastify.post(
       const session = await getCurrentSession(sessionId, Number(agentId));
       const { currentNode, context } = session;
 
+      // Grab the workflow
       const workflow = await db.get(
         `SELECT workflowJson FROM workflows WHERE agentId = ?`,
         [agentId]
       );
-
       if (!workflow) throw new Error(`Workflow not found for agent ${agentId}`);
 
       const parsedWorkflow = JSON.parse(workflow.workflowJson);
       const currentStep = parsedWorkflow.find(
         (node: any) => node.id === currentNode
       );
-
-      if (!currentStep)
+      if (!currentStep) {
         throw new Error(`Invalid workflow step: ${currentNode}`);
+      }
 
       let responseMessage: string;
 
       switch (currentStep.id) {
         case "greet":
+          // Could also do a Groq LLM call for a greeting if you like:
           responseMessage = "Hello! How can I assist you today?";
           break;
 
         case "collectInformation":
           context["userInfo"] = input;
-          responseMessage = "Thank you! Your information has been saved.";
+          // Another place we could call LLM to confirm we collected info
+          responseMessage = `Thank you! I have saved: "${input}" as your info.`;
           break;
 
         case "askQuestions":
-          // Generate embeddings for the user’s input
-          const embeddings = await getHuggingFaceEmbeddings([input]);
+          // 1. Possibly embed and query Pinecone
+          let relevantContext =
+            "No relevant context found (embeddings disabled).";
 
-          // Query Pinecone
-          const index = pinecone.Index(PINECONE_INDEX);
-          const pineconeResults = await index.query({
-            vector: embeddings[0],
-            topK: 3,
-            includeMetadata: true,
-          });
+          if (!disableEmbeddings) {
+            const embeddings = await getHuggingFaceEmbeddings([input]);
+            const index = pinecone.Index(PINECONE_INDEX);
+            const pineconeResults = await index.query({
+              vector: embeddings[0],
+              topK: 3,
+              includeMetadata: true,
+            });
 
-          responseMessage = `Here’s what I found: ${pineconeResults.matches
-            .map((match: any) => match.metadata.content)
-            .join(", ")}`;
+            relevantContext = pineconeResults.matches
+              .map((match: any) => match.metadata.content)
+              .join("\n");
+          }
+
+          // 2. Now pass user input + relevantContext to the LLM
+          responseMessage = await generateLLMResponse(input, relevantContext);
           break;
 
         case "followUp":
+          // Possibly another LLM prompt for some final text
           responseMessage = "I’ve sent a follow-up email to your address.";
           break;
 
