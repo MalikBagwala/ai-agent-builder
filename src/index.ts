@@ -309,17 +309,21 @@ async function getCurrentSession(sessionId: string, agentId: number) {
     if (!workflow) throw new Error(`Workflow not found for agent ${agentId}`);
 
     const parsedWorkflow = JSON.parse(workflow.workflowJson);
-    const initialNode = parsedWorkflow[0]?.id || "greet";
+    const initialNode = parsedWorkflow[0]?.id;
 
     await db.run(
-      `INSERT INTO sessions (sessionId, agentId, currentNode) VALUES (?, ?, ?)`,
-      [sessionId, agentId, initialNode]
+      `INSERT INTO sessions (sessionId, agentId, currentNode, context) VALUES (?, ?, ?, ?)`,
+      [sessionId, agentId, initialNode, JSON.stringify({})] // Initialize context as an empty object
     );
 
     return { sessionId, agentId, currentNode: initialNode, context: {} };
   }
 
-  return session;
+  // Parse the context field into an object
+  return {
+    ...session,
+    context: session.context ? JSON.parse(session.context) : {},
+  };
 }
 
 async function updateSession(
@@ -330,7 +334,7 @@ async function updateSession(
 ) {
   await db.run(
     `UPDATE sessions SET currentNode = ?, context = ? WHERE sessionId = ? AND agentId = ?`,
-    [nextNode, JSON.stringify(context), sessionId, agentId]
+    [nextNode, JSON.stringify(context), sessionId, agentId] // Serialize context as a string
   );
 }
 
